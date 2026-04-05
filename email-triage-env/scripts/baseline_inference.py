@@ -1,8 +1,9 @@
-"""Baseline inference script using OpenAI API."""
+"""Baseline inference script using Google Gemini API."""
 
 import os
 import json
 import sys
+import time
 from typing import Dict, Any
 from pathlib import Path
 
@@ -14,43 +15,45 @@ from email_triage.environment import EmailTriageEnv
 from email_triage.models import Action, ActionType, EmailCategory
 
 try:
-    from openai import OpenAI
+    import google.genai as genai
 except ImportError:
-    print("Error: openai package not installed. Run: pip install openai")
+    print("Error: google-genai package not installed. Run: pip install google-genai")
     sys.exit(1)
 
 
 def load_api_key() -> str:
-    """Load OpenAI API key from environment (.env or environment variables)."""
-    api_key = os.getenv("OPENAI_API_KEY")
+    """Load Gemini API key from environment (.env or environment variables)."""
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError(
-            "OPENAI_API_KEY environment variable not set. "
-            "Please set it before running: export OPENAI_API_KEY='your-key'"
+            "GEMINI_API_KEY environment variable not set. "
+            "Please set it before running: export GEMINI_API_KEY='your-key'"
         )
     return api_key
 
 
-def classify_email_with_gpt(
-    client: OpenAI,
+def classify_email_with_gemini(
+    client,
     sender: str,
     subject: str,
     preview: str,
     is_reply: bool,
     has_attachment: bool,
     task_id: str,
+    max_retries: int = 5,
 ) -> EmailCategory:
     """
-    Use GPT to classify an email.
+    Use Gemini to classify an email with retry logic for rate limiting.
     
     Args:
-        client: OpenAI client
+        client: Gemini client
         sender: Email sender address
         subject: Email subject line
         preview: Email body preview
         is_reply: Whether this is a reply
         has_attachment: Whether email has attachments
         task_id: Task ID for context
+        max_retries: Maximum number of retries on rate limit
     
     Returns:
         Predicted email category
@@ -95,23 +98,43 @@ Has Attachment: {has_attachment}
 
 Response (ONLY the category name): """
     
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=50,
-        messages=[
-            {"role": "user", "content": user_message}
-        ]
-    )
+    # Retry logic with exponential backoff for rate limiting
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=user_message
+            )
+            
+            # Parse response
+            response_text = response.text.strip().lower()
+            
+            # Extract category
+            for category in EmailCategory:
+                if category.value.lower() in response_text.lower():
+                    return category
+            
+            # Default to informational if unclear
+            return EmailCategory.INFORMATIONAL
+            
+        except Exception as e:
+            error_str = str(e)
+            
+            # Check if it's a rate limit error (429)
+            if "429" in error_str or "rate" in error_str.lower():
+                if attempt < max_retries - 1:
+                    # Extract retry delay or use exponential backoff
+                    retry_delay = 30 * (2 ** attempt)  # 30s, 60s, 120s, 240s, 480s
+                    print(f"  ⏳ Rate limited. Retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    raise e
+            else:
+                # Non-rate-limit error, don't retry
+                raise e
     
-    # Parse response
-    response_text = response.choices[0].message.content.strip().lower()
-    
-    # Extract category
-    for category in EmailCategory:
-        if category.value.lower() in response_text.lower():
-            return category
-    
-    # Default to informational if unclear
+    # Should not reach here
     return EmailCategory.INFORMATIONAL
 
 
@@ -129,7 +152,7 @@ def run_baseline(task_id: str = "task_1_easy", verbose: bool = True) -> Dict[str
     
     # Initialize
     api_key = load_api_key()
-    client = OpenAI(api_key=api_key)
+    client = genai.Client(api_key=api_key)
     
     env = EmailTriageEnv(task_id=task_id)
     observation = env.reset()
@@ -151,8 +174,8 @@ def run_baseline(task_id: str = "task_1_easy", verbose: bool = True) -> Dict[str
         current_email = observation.current_email
         
         try:
-            # Get classification from GPT
-            predicted_category = classify_email_with_gpt(
+            # Get classification from Gemini
+            predicted_category = classify_email_with_gemini(
                 client=client,
                 sender=current_email.sender,
                 subject=current_email.subject,
@@ -166,7 +189,7 @@ def run_baseline(task_id: str = "task_1_easy", verbose: bool = True) -> Dict[str
             action = Action(
                 action_type=ActionType.CLASSIFY,
                 category=predicted_category,
-                reason="GPT classification"
+                reason="Gemini classification"
             )
             
             observation, reward, done, info = env.step(action)

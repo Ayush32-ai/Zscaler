@@ -1,0 +1,11 @@
+{
+  "task_1_easy": {
+    "error": "XAI_API_KEY environment variable not set. Please set it before running: export XAI_API_KEY='your-key'"
+  },
+  "task_2_medium": {
+    "error": "XAI_API_KEY environment variable not set. Please set it before running: export XAI_API_KEY='your-key'"
+  },
+  "task_3_hard": {
+    "error": "XAI_API_KEY environment variable not set. Please set it before running: export XAI_API_KEY='your-key'"
+  }
+}
